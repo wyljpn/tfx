@@ -1,4 +1,3 @@
-# Lint as: python2, python3
 # Copyright 2019 Google LLC. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,10 +13,8 @@
 # limitations under the License.
 """End-to-end tests for tfx.examples.chicago_taxi_pipeline.taxi_pipeline_runtime_parameter."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import os
+import subprocess
 from absl import logging
 
 import tensorflow as tf
@@ -34,20 +31,40 @@ class TaxiPipelineRuntimeParameterEndToEndTest(
     """End-to-end test for pipeline with RuntimeParameter."""
     pipeline_name = 'kubeflow-e2e-test-parameter-{}'.format(
         test_utils.random_id())
+    pipeline_root = self._pipeline_root(pipeline_name)
+
+    transform_module_path = os.path.join(
+        pipeline_root, os.path.basename(self._transform_module))
+    trainer_module_path = os.path.join(pipeline_root,
+                                       os.path.basename(self._trainer_module))
+    # Upload module files to be available for the components.
+    # TODO(b/174289068): Move to dedicated GCS utils.
+    subprocess.run(
+        ['gsutil', 'cp', self._transform_module, transform_module_path],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ['gsutil', 'cp', self._trainer_module, trainer_module_path],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
     pipeline = taxi_pipeline_runtime_parameter._create_parameterized_pipeline(
         pipeline_name=pipeline_name,
-        pipeline_root=taxi_pipeline_runtime_parameter._pipeline_root,
+        pipeline_root=pipeline_root,
+        transform_module_file=transform_module_path,
+        trainer_module_file=trainer_module_path,
+        serving_model_dir=os.path.join(pipeline_root, 'serving_model'),
         enable_cache=True,
         beam_pipeline_args=taxi_pipeline_runtime_parameter._beam_pipeline_args)
 
     parameters = {
-        'pipeline-root': self._pipeline_root(pipeline_name),
-        'transform-module': self._transform_module,
-        'trainer-module': self._trainer_module,
         'data-root': self._data_root,
-        'train-steps': 10,
-        'eval-steps': 5,
-        'slicing-column': 'trip_start_hour',
+        'train-args': '{"num_steps": 100}',
+        'eval-args': '{"num_steps": 50}',
     }
 
     self._compile_and_run_pipeline(pipeline=pipeline, parameters=parameters)
