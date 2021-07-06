@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2019 Google LLC. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,10 +14,9 @@
 # limitations under the License.
 """TFX pusher executor."""
 
-"""
-Yulong, 20210629
-Use KFServing, at the last step of Pusher, create an InferenceService.
-"""
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 
 import os
 import time
@@ -34,16 +34,6 @@ from tfx.utils import io_utils
 from tfx.utils import path_utils
 from tfx.utils import proto_utils
 
-# Yulong 20210705
-# Customize Pusher to create an InferenceService
-from kubernetes import client
-from kfserving import KFServingClient
-from kfserving import constants
-from kfserving import V1alpha2EndpointSpec
-from kfserving import V1alpha2PredictorSpec
-from kfserving import V1alpha2TensorflowSpec
-from kfserving import V1alpha2InferenceServiceSpec
-from kfserving import V1alpha2InferenceService
 
 # Aliasing of enum for better readability.
 _Versioning = pusher_pb2.Versioning
@@ -52,9 +42,6 @@ _Versioning = pusher_pb2.Versioning
 _PUSHED_KEY = 'pushed'
 _PUSHED_DESTINATION_KEY = 'pushed_destination'
 _PUSHED_VERSION_KEY = 'pushed_version'
-
-# InfraBlessing property keys.
-_INFRA_BLESSING_MODEL_FLAG_KEY = 'has_model'
 
 
 class Executor(base_executor.BaseExecutor):
@@ -115,41 +102,6 @@ class Executor(base_executor.BaseExecutor):
                       'pipeline.')
     return True
 
-  def GetModelPath(self, input_dict: Dict[Text, List[types.Artifact]]) -> str:
-    """Get input model path to push.
-
-    Pusher can push various types of artifacts if it contains the model. This
-    method decides which artifact type is given to the Pusher and extracts the
-    real model path. Subclass of Pusher Executor should use this method to
-    acquire the source model path.
-
-    Args:
-      input_dict: A dictionary of artifacts that is given as the fisrt argument
-          to the Executor.Do() method.
-    Returns:
-      A resolved input model path.
-    Raises:
-      RuntimeError: If no model path is found from input_dict.
-    """
-    # Check input_dict['model'] first.
-    models = input_dict.get(standard_component_specs.MODEL_KEY)
-    if models:
-      model = artifact_utils.get_single_instance(models)
-      return path_utils.serving_model_path(
-          model.uri, path_utils.is_old_model_artifact(model))
-
-    # Falls back to input_dict['infra_blessing']
-    blessed_models = input_dict.get(standard_component_specs.INFRA_BLESSING_KEY)
-    if not blessed_models:
-      # Should not reach here; Pusher.__init__ prohibits creating a component
-      # without having any of model or infra_blessing inputs.
-      raise RuntimeError('Pusher has no model input.')
-    model = artifact_utils.get_single_instance(blessed_models)
-    if not model.get_int_custom_property(_INFRA_BLESSING_MODEL_FLAG_KEY):
-      raise RuntimeError('InfraBlessing does not contain a model. Check '
-                         'request_spec.make_warmup is set to True.')
-    return path_utils.stamped_model_path(model.uri)
-
   def Do(self, input_dict: Dict[Text, List[types.Artifact]],
          output_dict: Dict[Text, List[types.Artifact]],
          exec_properties: Dict[Text, Any]) -> None:
@@ -177,7 +129,9 @@ class Executor(base_executor.BaseExecutor):
     if not self.CheckBlessing(input_dict):
       self._MarkNotPushed(model_push)
       return
-    model_path = self.GetModelPath(input_dict)
+    model_export = artifact_utils.get_single_instance(
+        input_dict[standard_component_specs.MODEL_KEY])
+    model_path = path_utils.serving_model_path(model_export.uri)
 
     # Push model to the destination, which can be listened by a model server.
     #
@@ -224,29 +178,6 @@ class Executor(base_executor.BaseExecutor):
                      pushed_version=model_version)
     logging.info('Model pushed to %s.', model_push.uri)
 
-
-    ############## START Yulong 20210629 ##############
-
-    kfs_client = KFServingClient()
-    default_model_spec = V1alpha2EndpointSpec(predictor=V1alpha2PredictorSpec(tensorflow=V1alpha2TensorflowSpec(
-    storage_uri='pvc://tfx-pvc/output/Pusher/pushed_model/',
-    runtime_version="2.4.0")))
-
-    isvc = V1alpha2InferenceService(api_version="serving.kubeflow.org/v1alpha2",
-                          kind=constants.KFSERVING_KIND,
-                          metadata=client.V1ObjectMeta(name='rflowdemo', namespace='rflow'),
-                          spec=V1alpha2InferenceServiceSpec(default=default_model_spec))
-
-    try:
-        kfs_client.get(name="rflowdemo")
-        kfs_client.delete(name="rflowdemo")
-    except:
-        print("No existing InferenceService")
-    kfs_client.create(inferenceservice=isvc, namespace="rflow")
-
-    ############## END Yulong 20210629 ##############
-
-
   def _MarkPushed(self, model_push: types.Artifact, pushed_destination: Text,
                   pushed_version: Optional[Text] = None) -> None:
     model_push.set_int_custom_property('pushed', 1)
@@ -257,5 +188,3 @@ class Executor(base_executor.BaseExecutor):
 
   def _MarkNotPushed(self, model_push: types.Artifact):
     model_push.set_int_custom_property('pushed', 0)
-
-
